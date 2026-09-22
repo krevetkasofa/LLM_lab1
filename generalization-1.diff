@@ -1,0 +1,263 @@
+diff --git a/autocaption/__init__.py b/autocaption/__init__.py
+index 0cfee1c..83878d8 100644
+--- a/autocaption/__init__.py
++++ b/autocaption/__init__.py
+@@ -2,5 +2,6 @@ from .image_loader import ImageLoader
+ from .image_processor import ImageRotator, CarDetector
+ from .feature_extractor import ObjectExtractor, SceneExtractor, PhotoDescriber, PhotoDescriberWithQuestion
+ from .text_generator import TextGenerator
++from .validation import validate_bool_flag
+ 
+-__all__ = ["ImageLoader", "ImageRotator", "CarDetector", "ObjectExtractor", "SceneExtractor", "PhotoDescriber", "PhotoDescriberWithQuestion", "TextGenerator"]
++__all__ = ["ImageLoader", "ImageRotator", "CarDetector", "ObjectExtractor", "SceneExtractor", "PhotoDescriber", "PhotoDescriberWithQuestion", "TextGenerator", "validate_bool_flag"]
+diff --git a/autocaption/validation.py b/autocaption/validation.py
+new file mode 100644
+index 0000000..17be056
+--- /dev/null
++++ b/autocaption/validation.py
+@@ -0,0 +1,13 @@
++def validate_bool_flag(name: str, value) -> bool:
++    """
++    Проверяет, что флаг конфигурации pipeline имеет тип bool.
++    Значения вроде 0/1, "true", None не принимаются, чтобы избежать неявных преобразований.
++    :param name: имя параметра (для сообщения об ошибке)
++    :param value: проверяемое значение
++    :return: значение флага
++    :raises TypeError: если значение не является bool
++    """
++    if not isinstance(value, bool):
++        raise TypeError(
++            f"Параметр '{name}' должен быть bool, получено: {type(value).__name__} ({value!r})")
++    return value
+diff --git a/main.py b/main.py
+index 43518ec..63ef2c7 100644
+--- a/main.py
++++ b/main.py
+@@ -1,14 +1,24 @@
+ from autocaption import ImageLoader, ImageRotator, CarDetector, \
+-    ObjectExtractor, SceneExtractor, PhotoDescriber, PhotoDescriberWithQuestion
++    ObjectExtractor, SceneExtractor, PhotoDescriber, PhotoDescriberWithQuestion,     validate_bool_flag
+ 
+ 
+-def run_pipeline(image_path: list[str], source: bool) -> list:
++def run_pipeline(image_path: list[str], source: bool, *,
++                 classify_scene: bool = True,
++                 generate_description: bool = True) -> list:
+     """
+     Прогоняет картинку через модели с помощью написанной библиотеки autocaption
+     :param image_path: путь к изображению
+     :param source: источник картинки (True = локальный путь, False = URL)
++    :param classify_scene: выполнять ли классификацию сцены (SceneExtractor)
++    :param generate_description: выполнять ли генерацию описания через BLIP
++        (PhotoDescriber и PhotoDescriberWithQuestion)
+     :return: текстовое описание окружения картинки
++    :raises TypeError: если classify_scene или generate_description не bool
+     """
++    # проверяем флаги до загрузки моделей
++    classify_scene = validate_bool_flag("classify_scene", classify_scene)
++    generate_description = validate_bool_flag("generate_description", generate_description)
++
+     res = [[] for _ in range(len(image_path))]
+ 
+     # инициализация классов
+@@ -19,12 +29,17 @@ def run_pipeline(image_path: list[str], source: bool) -> list:
+     car_detector = CarDetector()
+     print('Инициализация модели нахождения объектов')
+     object_extractor = ObjectExtractor()
+-    print('Инициализация модели классификации сцены')
+-    scene_classificator = SceneExtractor()
+-    print('Инициализация модели BLIP')
+-    describer = PhotoDescriber()
+-    print('Инициализация модели BLIP с вопросом в промте')
+-    q_describer = PhotoDescriberWithQuestion()
++    # модели отключённых этапов не загружаются
++    scene_classificator = None
++    if classify_scene:
++        print('Инициализация модели классификации сцены')
++        scene_classificator = SceneExtractor()
++    describer = q_describer = None
++    if generate_description:
++        print('Инициализация модели BLIP')
++        describer = PhotoDescriber()
++        print('Инициализация модели BLIP с вопросом в промте')
++        q_describer = PhotoDescriberWithQuestion()
+ 
+     # поехали
+     print('Начинается обработка изображений')
+@@ -50,23 +65,24 @@ def run_pipeline(image_path: list[str], source: bool) -> list:
+         res[i].append(object_extractor.extract_features(image))
+ 
+         # определение сцены
++        if classify_scene:
++            # убрал класс tunnel, так как там модель почти всегда выдает 1
++            temp_dict = scene_classificator.predict_scene(image)
++            temp_dict.popitem()
+ 
+-        # убрал класс tunnel, так как там модель почти всегда выдает 1
+-        temp_dict = scene_classificator.predict_scene(image)
+-        temp_dict.popitem()
+-
+-        res[i].append(temp_dict)
++            res[i].append(temp_dict)
+ 
+-        # генерация краткого описания
+-        result = describer.simple_photo_describe(image)
+-        res[i].append(f"Базовое описание: {result['base']}")
+-        res[i].append(f"Подробное описание: {result['detailed']}")
+-        res[i].append(f"Альтернативное описание: {result['alternative']}")
++        if generate_description:
++            # генерация краткого описания
++            result = describer.simple_photo_describe(image)
++            res[i].append(f"Базовое описание: {result['base']}")
++            res[i].append(f"Подробное описание: {result['detailed']}")
++            res[i].append(f"Альтернативное описание: {result['alternative']}")
+ 
+-        # Получаем дополнительно описание через BLIP VQA с конкретным вопросом
++            # Получаем дополнительно описание через BLIP VQA с конкретным вопросом
+ 
+-        vqa_desc = q_describer.photo_describe(image)
+-        res[i].append(f"Описание по вопросу (VQA): {vqa_desc}")
++            vqa_desc = q_describer.photo_describe(image)
++            res[i].append(f"Описание по вопросу (VQA): {vqa_desc}")
+ 
+     return res
+ 
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 36d74cf..c27c37d 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -1,6 +1,8 @@
+ import sys
+ import types
+ 
++import pytest
++
+ from conftest import load_source_module
+ 
+ 
+@@ -91,6 +93,9 @@ def load_main_with_fakes(monkeypatch, *, loaded_image, has_car=True):
+     fake_autocaption.SceneExtractor = SceneExtractor
+     fake_autocaption.PhotoDescriber = PhotoDescriber
+     fake_autocaption.PhotoDescriberWithQuestion = PhotoDescriberWithQuestion
++    # validation is lightweight, so the real implementation is used
++    validation = load_source_module("_validation_under_test", "autocaption/validation.py")
++    fake_autocaption.validate_bool_flag = validation.validate_bool_flag
+ 
+     monkeypatch.setitem(sys.modules, "autocaption", fake_autocaption)
+ 
+@@ -184,3 +189,90 @@ def test_heavy_components_are_initialized_once_for_multiple_images(monkeypatch):
+     assert counters["ImageLoader"] == 2
+     assert counters["rotate"] == 2
+     assert counters["detect_car"] == 2
++
++
++BASE_RESULT = [
++    {"Tree": 2, "Building": 1},
++    {"city street": 0.81},
++    "Базовое описание: base",
++    "Подробное описание: detailed",
++    "Альтернативное описание: alternative",
++    "Описание по вопросу (VQA): vqa",
++]
++
++
++def test_explicit_true_flags_match_default_result(monkeypatch):
++    main, _ = load_main_with_fakes(monkeypatch, loaded_image=object())
++
++    default = main.run_pipeline(["car.jpg"], source=True)
++    explicit = main.run_pipeline(
++        ["car.jpg"], source=True, classify_scene=True, generate_description=True)
++
++    assert default == explicit == [BASE_RESULT]
++
++
++def test_scene_classification_can_be_disabled(monkeypatch):
++    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
++
++    result = main.run_pipeline(["one.jpg", "two.jpg"], source=True, classify_scene=False)
++
++    expected = [item for item in BASE_RESULT if item != {"city street": 0.81}]
++    assert result == [expected, expected]
++    assert counters["SceneExtractor"] == 0
++    assert counters["predict_scene"] == 0
++    assert counters["PhotoDescriber"] == 1
++    assert counters["PhotoDescriberWithQuestion"] == 1
++    assert counters["simple_photo_describe"] == 2
++    assert counters["photo_describe"] == 2
++
++
++def test_description_generation_can_be_disabled(monkeypatch):
++    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
++
++    result = main.run_pipeline(["one.jpg", "two.jpg"], source=True, generate_description=False)
++
++    expected = [{"Tree": 2, "Building": 1}, {"city street": 0.81}]
++    assert result == [expected, expected]
++    assert counters["PhotoDescriber"] == 0
++    assert counters["PhotoDescriberWithQuestion"] == 0
++    assert counters["simple_photo_describe"] == 0
++    assert counters["photo_describe"] == 0
++    assert counters["SceneExtractor"] == 1
++    assert counters["predict_scene"] == 2
++
++
++def test_all_optional_stages_can_be_disabled(monkeypatch):
++    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
++
++    result = main.run_pipeline(
++        ["car.jpg"], source=True, classify_scene=False, generate_description=False)
++
++    assert result == [[{"Tree": 2, "Building": 1}]]
++    assert counters["SceneExtractor"] == 0
++    assert counters["PhotoDescriber"] == 0
++    assert counters["PhotoDescriberWithQuestion"] == 0
++    # mandatory stages still run
++    assert counters["ImageRotator"] == 1
++    assert counters["CarDetector"] == 1
++    assert counters["ObjectExtractor"] == 1
++    assert counters["extract_features"] == 1
++
++
++@pytest.mark.parametrize("flag", ["classify_scene", "generate_description"])
++@pytest.mark.parametrize("value", [0, 1, "False", "true", None, 1.0, [True]])
++def test_non_bool_flag_raises_before_models_are_loaded(monkeypatch, flag, value):
++    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
++
++    with pytest.raises(TypeError, match=flag):
++        main.run_pipeline(["car.jpg"], source=True, **{flag: value})
++
++    for component in ("ImageRotator", "CarDetector", "ObjectExtractor", "SceneExtractor",
++                      "PhotoDescriber", "PhotoDescriberWithQuestion", "ImageLoader"):
++        assert counters[component] == 0
++
++
++def test_flags_are_keyword_only(monkeypatch):
++    main, _ = load_main_with_fakes(monkeypatch, loaded_image=object())
++
++    with pytest.raises(TypeError):
++        main.run_pipeline(["car.jpg"], True, False)
+diff --git a/tests/test_validation.py b/tests/test_validation.py
+new file mode 100644
+index 0000000..561aaf4
+--- /dev/null
++++ b/tests/test_validation.py
+@@ -0,0 +1,19 @@
++import pytest
++
++from conftest import load_source_module
++
++
++@pytest.fixture(scope="module")
++def validation_module():
++    return load_source_module("_validation_under_test", "autocaption/validation.py")
++
++
++@pytest.mark.parametrize("value", [True, False])
++def test_bool_values_are_accepted(validation_module, value):
++    assert validation_module.validate_bool_flag("flag", value) is value
++
++
++@pytest.mark.parametrize("value", [0, 1, "True", "", None, 0.0, [], object()])
++def test_non_bool_values_are_rejected(validation_module, value):
++    with pytest.raises(TypeError, match="my_flag"):
++        validation_module.validate_bool_flag("my_flag", value)
