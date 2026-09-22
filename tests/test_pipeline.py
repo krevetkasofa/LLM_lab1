@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 from conftest import load_source_module
 
 
@@ -91,6 +93,9 @@ def load_main_with_fakes(monkeypatch, *, loaded_image, has_car=True):
     fake_autocaption.SceneExtractor = SceneExtractor
     fake_autocaption.PhotoDescriber = PhotoDescriber
     fake_autocaption.PhotoDescriberWithQuestion = PhotoDescriberWithQuestion
+    # validation is lightweight, so the real implementation is used
+    validation = load_source_module("_validation_under_test", "autocaption/validation.py")
+    fake_autocaption.validate_bool_flag = validation.validate_bool_flag
 
     monkeypatch.setitem(sys.modules, "autocaption", fake_autocaption)
 
@@ -184,3 +189,90 @@ def test_heavy_components_are_initialized_once_for_multiple_images(monkeypatch):
     assert counters["ImageLoader"] == 2
     assert counters["rotate"] == 2
     assert counters["detect_car"] == 2
+
+
+BASE_RESULT = [
+    {"Tree": 2, "Building": 1},
+    {"city street": 0.81},
+    "Базовое описание: base",
+    "Подробное описание: detailed",
+    "Альтернативное описание: alternative",
+    "Описание по вопросу (VQA): vqa",
+]
+
+
+def test_explicit_true_flags_match_default_result(monkeypatch):
+    main, _ = load_main_with_fakes(monkeypatch, loaded_image=object())
+
+    default = main.run_pipeline(["car.jpg"], source=True)
+    explicit = main.run_pipeline(
+        ["car.jpg"], source=True, classify_scene=True, generate_description=True)
+
+    assert default == explicit == [BASE_RESULT]
+
+
+def test_scene_classification_can_be_disabled(monkeypatch):
+    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
+
+    result = main.run_pipeline(["one.jpg", "two.jpg"], source=True, classify_scene=False)
+
+    expected = [item for item in BASE_RESULT if item != {"city street": 0.81}]
+    assert result == [expected, expected]
+    assert counters["SceneExtractor"] == 0
+    assert counters["predict_scene"] == 0
+    assert counters["PhotoDescriber"] == 1
+    assert counters["PhotoDescriberWithQuestion"] == 1
+    assert counters["simple_photo_describe"] == 2
+    assert counters["photo_describe"] == 2
+
+
+def test_description_generation_can_be_disabled(monkeypatch):
+    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
+
+    result = main.run_pipeline(["one.jpg", "two.jpg"], source=True, generate_description=False)
+
+    expected = [{"Tree": 2, "Building": 1}, {"city street": 0.81}]
+    assert result == [expected, expected]
+    assert counters["PhotoDescriber"] == 0
+    assert counters["PhotoDescriberWithQuestion"] == 0
+    assert counters["simple_photo_describe"] == 0
+    assert counters["photo_describe"] == 0
+    assert counters["SceneExtractor"] == 1
+    assert counters["predict_scene"] == 2
+
+
+def test_all_optional_stages_can_be_disabled(monkeypatch):
+    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
+
+    result = main.run_pipeline(
+        ["car.jpg"], source=True, classify_scene=False, generate_description=False)
+
+    assert result == [[{"Tree": 2, "Building": 1}]]
+    assert counters["SceneExtractor"] == 0
+    assert counters["PhotoDescriber"] == 0
+    assert counters["PhotoDescriberWithQuestion"] == 0
+    # mandatory stages still run
+    assert counters["ImageRotator"] == 1
+    assert counters["CarDetector"] == 1
+    assert counters["ObjectExtractor"] == 1
+    assert counters["extract_features"] == 1
+
+
+@pytest.mark.parametrize("flag", ["classify_scene", "generate_description"])
+@pytest.mark.parametrize("value", [0, 1, "False", "true", None, 1.0, [True]])
+def test_non_bool_flag_raises_before_models_are_loaded(monkeypatch, flag, value):
+    main, counters = load_main_with_fakes(monkeypatch, loaded_image=object())
+
+    with pytest.raises(TypeError, match=flag):
+        main.run_pipeline(["car.jpg"], source=True, **{flag: value})
+
+    for component in ("ImageRotator", "CarDetector", "ObjectExtractor", "SceneExtractor",
+                      "PhotoDescriber", "PhotoDescriberWithQuestion", "ImageLoader"):
+        assert counters[component] == 0
+
+
+def test_flags_are_keyword_only(monkeypatch):
+    main, _ = load_main_with_fakes(monkeypatch, loaded_image=object())
+
+    with pytest.raises(TypeError):
+        main.run_pipeline(["car.jpg"], True, False)

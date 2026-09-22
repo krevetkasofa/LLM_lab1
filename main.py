@@ -1,14 +1,24 @@
 from autocaption import ImageLoader, ImageRotator, CarDetector, \
-    ObjectExtractor, SceneExtractor, PhotoDescriber, PhotoDescriberWithQuestion
+    ObjectExtractor, SceneExtractor, PhotoDescriber, PhotoDescriberWithQuestion,     validate_bool_flag
 
 
-def run_pipeline(image_path: list[str], source: bool) -> list:
+def run_pipeline(image_path: list[str], source: bool, *,
+                 classify_scene: bool = True,
+                 generate_description: bool = True) -> list:
     """
     Прогоняет картинку через модели с помощью написанной библиотеки autocaption
     :param image_path: путь к изображению
     :param source: источник картинки (True = локальный путь, False = URL)
+    :param classify_scene: выполнять ли классификацию сцены (SceneExtractor)
+    :param generate_description: выполнять ли генерацию описания через BLIP
+        (PhotoDescriber и PhotoDescriberWithQuestion)
     :return: текстовое описание окружения картинки
+    :raises TypeError: если classify_scene или generate_description не bool
     """
+    # проверяем флаги до загрузки моделей
+    classify_scene = validate_bool_flag("classify_scene", classify_scene)
+    generate_description = validate_bool_flag("generate_description", generate_description)
+
     res = [[] for _ in range(len(image_path))]
 
     # инициализация классов
@@ -19,12 +29,17 @@ def run_pipeline(image_path: list[str], source: bool) -> list:
     car_detector = CarDetector()
     print('Инициализация модели нахождения объектов')
     object_extractor = ObjectExtractor()
-    print('Инициализация модели классификации сцены')
-    scene_classificator = SceneExtractor()
-    print('Инициализация модели BLIP')
-    describer = PhotoDescriber()
-    print('Инициализация модели BLIP с вопросом в промте')
-    q_describer = PhotoDescriberWithQuestion()
+    # модели отключённых этапов не загружаются
+    scene_classificator = None
+    if classify_scene:
+        print('Инициализация модели классификации сцены')
+        scene_classificator = SceneExtractor()
+    describer = q_describer = None
+    if generate_description:
+        print('Инициализация модели BLIP')
+        describer = PhotoDescriber()
+        print('Инициализация модели BLIP с вопросом в промте')
+        q_describer = PhotoDescriberWithQuestion()
 
     # поехали
     print('Начинается обработка изображений')
@@ -50,23 +65,24 @@ def run_pipeline(image_path: list[str], source: bool) -> list:
         res[i].append(object_extractor.extract_features(image))
 
         # определение сцены
+        if classify_scene:
+            # убрал класс tunnel, так как там модель почти всегда выдает 1
+            temp_dict = scene_classificator.predict_scene(image)
+            temp_dict.popitem()
 
-        # убрал класс tunnel, так как там модель почти всегда выдает 1
-        temp_dict = scene_classificator.predict_scene(image)
-        temp_dict.popitem()
+            res[i].append(temp_dict)
 
-        res[i].append(temp_dict)
+        if generate_description:
+            # генерация краткого описания
+            result = describer.simple_photo_describe(image)
+            res[i].append(f"Базовое описание: {result['base']}")
+            res[i].append(f"Подробное описание: {result['detailed']}")
+            res[i].append(f"Альтернативное описание: {result['alternative']}")
 
-        # генерация краткого описания
-        result = describer.simple_photo_describe(image)
-        res[i].append(f"Базовое описание: {result['base']}")
-        res[i].append(f"Подробное описание: {result['detailed']}")
-        res[i].append(f"Альтернативное описание: {result['alternative']}")
+            # Получаем дополнительно описание через BLIP VQA с конкретным вопросом
 
-        # Получаем дополнительно описание через BLIP VQA с конкретным вопросом
-
-        vqa_desc = q_describer.photo_describe(image)
-        res[i].append(f"Описание по вопросу (VQA): {vqa_desc}")
+            vqa_desc = q_describer.photo_describe(image)
+            res[i].append(f"Описание по вопросу (VQA): {vqa_desc}")
 
     return res
 
