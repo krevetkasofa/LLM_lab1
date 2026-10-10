@@ -92,6 +92,13 @@ def load_main_with_fakes(monkeypatch, *, loaded_image, has_car=True):
     fake_autocaption.PhotoDescriber = PhotoDescriber
     fake_autocaption.PhotoDescriberWithQuestion = PhotoDescriberWithQuestion
 
+    # result_writer has no ML dependencies, so the real implementation is used
+    result_writer = load_source_module(
+        "_result_writer_under_test", "autocaption/result_writer.py")
+    fake_autocaption.ResultsSaveError = result_writer.ResultsSaveError
+    fake_autocaption.validate_output_path = result_writer.validate_output_path
+    fake_autocaption.save_results_json = result_writer.save_results_json
+
     monkeypatch.setitem(sys.modules, "autocaption", fake_autocaption)
 
     main = load_source_module("_main_under_test", "main.py")

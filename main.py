@@ -1,14 +1,22 @@
+import os
+
 from autocaption import ImageLoader, ImageRotator, CarDetector, \
-    ObjectExtractor, SceneExtractor, PhotoDescriber, PhotoDescriberWithQuestion
+    ObjectExtractor, SceneExtractor, PhotoDescriber, PhotoDescriberWithQuestion, \
+    ResultsSaveError, validate_output_path, save_results_json
 
 
-def run_pipeline(image_path: list[str], source: bool) -> list:
+def run_pipeline(image_path: list[str], source: bool,
+                 output_path: str | os.PathLike | None = None) -> list:
     """
     Прогоняет картинку через модели с помощью написанной библиотеки autocaption
     :param image_path: путь к изображению
     :param source: источник картинки (True = локальный путь, False = URL)
+    :param output_path: необязательный путь к JSON-файлу для сохранения результатов
     :return: текстовое описание окружения картинки
     """
+    # проверяем аргумент до загрузки моделей, чтобы ошибка появлялась сразу
+    validate_output_path(output_path)
+
     res = [[] for _ in range(len(image_path))]
 
     # инициализация классов
@@ -68,16 +76,22 @@ def run_pipeline(image_path: list[str], source: bool) -> list:
         vqa_desc = q_describer.photo_describe(image)
         res[i].append(f"Описание по вопросу (VQA): {vqa_desc}")
 
+    if output_path is not None:
+        save_results_json(res, output_path)
+
     return res
 
 
 if __name__ == "__main__":
     # тесты
-    res = run_pipeline(
-        ["/home/jupyter/project/Grisha/dataset_images/img_00000.jpeg",
-         "/home/jupyter/project/Grisha/dataset_images/img_00067.jpeg"
-         ],
-        source=True)
+    try:
+        res = run_pipeline(
+            ["/home/jupyter/project/Grisha/dataset_images/img_00000.jpeg",
+             "/home/jupyter/project/Grisha/dataset_images/img_00067.jpeg"
+             ],
+            source=True)
+    except ResultsSaveError as e:
+        raise SystemExit(str(e))
     # res = run_pipeline(
     #     ['https://carsharing-acceptances.s3.yandex.net/000080b5-5f40-4f6b-56bd-68e42cfe0f1d/car_location_22075860-8af6-11f0-b981-052fecb11955.CAP84636423206376342.jpg/46f3928-fad162a0-af3ae0d5-516d116e'],
     #     source=False)
