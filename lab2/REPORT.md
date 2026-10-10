@@ -58,7 +58,8 @@
 | Metadata | Read-only (обязательное, выдаётся автоматически) |
 | Всё остальное (Administration, Actions, Secrets, Workflows и т.д.) | не выдано |
 
-<!-- Вставьте сюда скриншоты настроек токена -->
+<img width="1135" height="892" alt="acces token" src="https://github.com/user-attachments/assets/f85e7502-505f-427c-a37d-5a2b37386484" />
+<img width="1177" height="778" alt="permitions" src="https://github.com/user-attachments/assets/7ba85d13-4422-4fcf-bda7-b9028f7c525a" />
 
 **Соответствие таблице из задания:**
 
